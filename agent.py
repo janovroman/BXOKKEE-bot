@@ -96,7 +96,7 @@ def build_system_prompt() -> str:
 
 
 def sanitize_reply(text: str) -> str:
-    reply = text.strip()
+    reply = text.strip().replace("**", "").replace("__", "")
     for forbidden, replacement in FORBIDDEN_REPLACEMENTS.items():
         reply = reply.replace(forbidden, replacement)
         reply = reply.replace(forbidden.capitalize(), replacement)
@@ -179,6 +179,28 @@ def has_budget_request(text: str) -> bool:
     )
 
 
+def blade_options_reply(size: str) -> str:
+    return (
+        f"Понял, нужны лезвия Bauer Tuuk Edge {size}.\n\n"
+        "Есть три варианта:\n"
+        "1. Бюджетные лезвия без бренда — базовая цена 3490 ₽.\n"
+        "2. in hockey® Base — базовая цена 4990 ₽.\n"
+        "3. in hockey® Pro — базовая цена 5990 ₽.\n\n"
+        "Можем сразу подготовить лезвия к выходу на лёд: сделать профилирование и заточку нужным желобом. "
+        "При профилировании заточка входит в подарок.\n\n"
+        "Какой вариант рассматриваете?"
+    )
+
+
+def budget_blade_reply(size: str) -> str:
+    return (
+        f"Самый доступный вариант для Bauer Tuuk Edge {size} — бюджетные лезвия без бренда. "
+        "Базовая цена 3490 ₽.\n\n"
+        "Если хотите, можем сразу подготовить их к выходу на лёд: сделать профилирование и заточку нужным желобом. "
+        "При профилировании заточка входит в подарок."
+    )
+
+
 def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None) -> str:
     lowered = normalize_text(text)
     context = user_history_text(history)
@@ -192,29 +214,23 @@ def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None)
     blade_context = has_blade_request(full_context) or has_bauer or full_has_edge
 
     if has_budget_request(lowered):
-        if has_bauer and full_has_edge and size:
-            return f"Самый доступный вариант для Bauer Tuuk Edge {size} — бюджетные лезвия без бренда. Базовая цена — 3490 ₽."
+        if full_has_edge and size:
+            return budget_blade_reply(size)
         return "Самый доступный вариант — бюджетные лезвия без бренда. Для точной проверки подскажите стакан и размер лезвия."
 
-    if current_has_edge and current_size:
-        return (
-            f"Понял, Bauer Tuuk Edge {current_size}. Есть три варианта: бюджетные лезвия без бренда, "
-            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
-        )
-
-    if has_bauer and full_has_edge and current_size:
-        return (
-            f"Понял, Bauer Tuuk Edge {current_size}. Есть три варианта: бюджетные лезвия без бренда, "
-            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
-        )
+    if full_has_edge and current_size:
+        return blade_options_reply(current_size)
 
     if current_has_bauer and current_has_edge and size:
-        return (
-            f"Понял, Bauer Tuuk Edge {size}. Есть три варианта: бюджетные лезвия без бренда, "
-            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
-        )
+        return blade_options_reply(size)
 
-    if blade_context and has_bauer and current_has_edge and not size:
+    if current_has_edge and current_size:
+        return blade_options_reply(current_size)
+
+    if blade_context and full_has_edge and size:
+        return blade_options_reply(size)
+
+    if blade_context and (has_bauer or current_has_edge) and current_has_edge and not size:
         return "Понял, Bauer Tuuk Edge. Какой размер лезвия нужен? Например 263, 272, 280."
 
     if blade_context and current_has_bauer and not full_has_edge:
