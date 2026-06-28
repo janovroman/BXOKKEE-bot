@@ -23,7 +23,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
-FALLBACK_SYSTEM_PROMPT = """Ты ассистент магазина #ВХОККЕЕ / ICE-SKATE.
+FALLBACK_SYSTEM_PROMPT = """Ты ассистент магазина BXOKKEE / ВХОККЕЕ.
 Отвечай коротко, спокойно и по делу. Не выдумывай цены, наличие, сроки, ссылки и совместимость.
 Сначала закрывай основной вопрос клиента. Задавай максимум один уточняющий вопрос.
 Если данных недостаточно, используй: Пришлите фото/модель — подскажу точнее.
@@ -60,6 +60,12 @@ FORBIDDEN_REPLACEMENTS = {
 app = FastAPI()
 _avito_token_cache = {"token": None, "expires_at": 0}
 chat_histories: dict[str, list[dict[str, str]]] = {}
+MAX_HISTORY_MESSAGES = 12
+DEFAULT_CLARIFICATION = "Пришлите фото/модель — подскажу точнее."
+CLARIFICATION_ALTERNATIVES = [
+    "Понял. Напишите модель или пришлите фото, и я точнее подскажу по вашему вопросу.",
+    "Хорошо, давайте уточним по модели или фото — так не ошибёмся с ответом.",
+]
 
 
 def read_text_or_fallback(path: Path, fallback: str) -> str:
@@ -96,6 +102,22 @@ def sanitize_reply(text: str) -> str:
     return reply
 
 
+def avoid_repeated_clarification(reply: str, history: list[dict[str, str]]) -> str:
+    previous_assistant_messages = [
+        item["content"].strip()
+        for item in reversed(history)
+        if item.get("role") == "assistant" and item.get("content")
+    ]
+    if not previous_assistant_messages:
+        return reply
+
+    previous_reply = previous_assistant_messages[0]
+    if reply.strip() != DEFAULT_CLARIFICATION or previous_reply != DEFAULT_CLARIFICATION:
+        return reply
+
+    return CLARIFICATION_ALTERNATIVES[0]
+
+
 def local_fallback_reply(text: str) -> str:
     lowered = text.lower()
 
@@ -130,15 +152,26 @@ def local_fallback_reply(text: str) -> str:
 
 
 def generate_reply(buyer_message: str, chat_id: str = "") -> str:
-    if os.getenv("BOT_MODE", "AUTO").strip().upper() == "MANUAL":
-        return "Пришлите фото/модель — подскажу точнее."
-
-    if not ANTHROPIC_API_KEY:
-        return local_fallback_reply(buyer_message)
-
     history_key = chat_id or "default"
     history = chat_histories.setdefault(history_key, [])
+
+    if os.getenv("BOT_MODE", "AUTO").strip().upper() == "MANUAL":
+        reply = avoid_repeated_clarification(DEFAULT_CLARIFICATION, history)
+        history.append({"role": "user", "content": buyer_message})
+        history.append({"role": "assistant", "content": reply})
+        chat_histories[history_key] = history[-MAX_HISTORY_MESSAGES:]
+        return reply
+
+    if not ANTHROPIC_API_KEY:
+        reply = sanitize_reply(local_fallback_reply(buyer_message))
+        reply = avoid_repeated_clarification(reply, history)
+        history.append({"role": "user", "content": buyer_message})
+        history.append({"role": "assistant", "content": reply})
+        chat_histories[history_key] = history[-MAX_HISTORY_MESSAGES:]
+        return reply
+
     history.append({"role": "user", "content": buyer_message})
+    recent_history = history[-MAX_HISTORY_MESSAGES:]
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -147,7 +180,7 @@ def generate_reply(buyer_message: str, chat_id: str = "") -> str:
             max_tokens=500,
             temperature=0.2,
             system=build_system_prompt(),
-            messages=history[-20:],
+            messages=recent_history,
         )
         reply = response.content[0].text
     except Exception:
@@ -155,8 +188,9 @@ def generate_reply(buyer_message: str, chat_id: str = "") -> str:
         reply = local_fallback_reply(buyer_message)
 
     reply = sanitize_reply(reply)
+    reply = avoid_repeated_clarification(reply, history)
     history.append({"role": "assistant", "content": reply})
-    chat_histories[history_key] = history[-20:]
+    chat_histories[history_key] = history[-MAX_HISTORY_MESSAGES:]
     return reply
 
 
