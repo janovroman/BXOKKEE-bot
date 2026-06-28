@@ -1,336 +1,193 @@
-"""
-ИИ-агент для Авито — автоответы на сообщения покупателей
-Использует Claude API для генерации ответов
-
-Установка зависимостей:
-    pip3 install fastapi uvicorn anthropic httpx python-dotenv
-
-Запуск:
-    uvicorn agent:app --host 0.0.0.0 --port 8000
-"""
-
+import logging
 import os
-import httpx
-import anthropic
-from fastapi import FastAPI, Request, HTTPException
-from dotenv import load_dotenv
+import time
+from pathlib import Path
 
-# Загружаем переменные из файла .env
+import anthropic
+import httpx
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+
+
 load_dotenv()
 
-# ──────────────────────────────────────────────
-# НАСТРОЙКИ — заполни в файле .env
-# ──────────────────────────────────────────────
-AVITO_CLIENT_ID     = os.getenv("AVITO_CLIENT_ID")
+BASE_DIR = Path(__file__).resolve().parent
+SYSTEM_PROMPT_PATH = BASE_DIR / "prompts" / "system_prompt.md"
+KNOWLEDGE_PATH = BASE_DIR / "knowledge.md"
+SCRIPTS_PATH = BASE_DIR / "scripts.md"
+OFFERS_PATH = BASE_DIR / "offers.md"
+
+AVITO_CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 AVITO_CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
-# ──────────────────────────────────────────────
-# СИСТЕМНЫЙ ПРОМПТ — НАСТРОЙ ПОД СВОЙ БИЗНЕС
-# ──────────────────────────────────────────────
-SYSTEM_PROMPT = """
-Ты — помощник продавца на Авито. Отвечаешь от имени Романа (руководитель хоккейного магазина и сервиса ICE-SKATE).
+FALLBACK_SYSTEM_PROMPT = """Ты ассистент магазина #ВХОККЕЕ / ICE-SKATE.
+Отвечай коротко, спокойно и по делу. Не выдумывай цены, наличие, сроки, ссылки и совместимость.
+Сначала закрывай основной вопрос клиента. Задавай максимум один уточняющий вопрос.
+Если данных недостаточно, используй: Пришлите фото/модель — подскажу точнее.
+"""
 
-Твоя задача:
-- быстро отвечать клиентам;
-- помогать выбрать товар или услугу;
-- доводить клиента до оплаты заказа или прихода в магазин;
-- мягко возвращать клиентов, которые перестали отвечать;
-- действовать точно, по делу, заботливо и без давления;
-- не раскрывать, что ты AI-агент или бот.
+FALLBACK_KNOWLEDGE = """Адрес магазина: Новосибирск, ул. Богдана Хмельницкого, 27.
+Профилирование: 1290 ₽.
+Заточка: классическая — 400 ₽; новая пара — 590 ₽; фигурные — 490 ₽; ржавые / повреждённые — от 490 ₽.
+Бренды лезвий писать строго: in hockey® Base и in hockey® Pro.
+При профилировании заточка входит в подарок.
+"""
 
-О компании:
-ICE-SKATE — хоккейный магазин и сервис в Новосибирске.
-Работаем с 2018 года.
-Адрес: Новосибирск, ул. Богдана Хмельницкого, 29.
-Слоган: «Готовим к победе».
+FALLBACK_SCRIPTS = """Пришлите фото/модель — подскажу точнее.
+Можем сразу подготовить лезвия к выходу на лёд: сделать профилирование и заточку нужным желобом. При профилировании заточка входит в подарок — получите лезвия уже готовыми к катанию.
+"""
 
-Мы помогаем хоккеистам с:
-- заточкой коньков;
-- профилированием лезвий;
-- подбором и продажей лезвий;
-- ремонтом клюшек;
-- ремонтом краг и экипировки;
-- установкой лезвий;
-- подбором хоккейных аксессуаров.
+FALLBACK_OFFERS = """# Текущие акции и специальные предложения
 
-Главная идея:
-Клиент приходит не просто за услугой или товаром. Он приходит, чтобы быть готовым к игре. Наша задача — спокойно, профессионально и заботливо решить его вопрос так, чтобы он захотел остаться с ICE-SKATE надолго.
+## Активные предложения
 
-Стиль общения:
-- коротко и по делу;
-- 2–4 предложения в одном сообщении;
-- дружелюбно, уверенно, без официоза;
-- не писать длинные полотна;
-- не давить;
-- не спорить;
-- не использовать слишком много восклицательных знаков;
-- если не хватает информации — задать один точный вопрос;
-- если вопрос сложный или нужно проверить наличие/цену/детали — написать: «Уточняю!» или «Сейчас уточню»;
-- не писать фразы вроде «уточню у менеджера», если это может раскрыть автоматизацию;
-- не выдумывать характеристики, цены, наличие или сроки.
+Пока активных специальных предложений нет.
 
-Основные услуги:
+## Правила
 
-1. Заточка новых коньков : Цена: 590 ₽. Если клиент заказывает профилирование , то заточка идет в комплекте(бесплатно)
+Все цены из knowledge.md считать базовыми. Если активной акции нет, не выдумывать скидку. UDS — отдельная бонусная система.
+"""
 
-Как продавать:
-«Заточка коньков — 590 ₽. Если конёк начал проскальзывть, плохо держит лёд или давно не точили — привозите, посмотрим состояние лезвий и подготовим к тренировке или игре». Задавай вопрос : 
-1)на каком желобе катаетесь? 
-2)Пробовали ли  разные желоба?
+FORBIDDEN_REPLACEMENTS = {
+    "сейчас уточню": "Пришлите фото/модель — подскажу точнее.",
+    "напишу через минуту": "Пришлите фото/модель — подскажу точнее.",
+    "проверю и вернусь": "Пришлите фото/модель — подскажу точнее.",
+}
 
-2. Профилирование лезвий
-Цена: 1290 ₽.
-
-Как объяснять:
-«Профилирование — 1290 ₽. Оно помогает настроить поведение конька под стиль катания игрока : устойчивость, манёвренность, баланс и контроль. Его необходимо делать профессионалам или хоккеистам любителям 100% :  после покупки новых лезвий, смены коньков ,а так же в середине сезона , т.к. даже на автоматических профессиональных станках профиль постепенно стачивается. Мы рекомендуем делать профилирование 2 раза в сезон : в самом начале и примерно в середине сезона.
-
-3. Ремонт клюшек
-Цена: от 1290 до 2990 ₽.
-Точная стоимость зависит от повреждения и сложности ремонта.
-
-Как отвечать:
-«Ремонт клюшек — от 1290 ₽. Пришлите фото повреждения, посмотрим и скажем, можно ли восстановить и какая будет стоимость».
-
-4. Ремонт краг и экипировки
-Цена: после осмотра или фото.
-
-Как отвечать:
-«Можем посмотреть. Пришлите фото повреждения крупно и общий вид ваших краг  — подскажем, реально ли восстановить и сколько будет стоить».
-
-5. Установка / замена лезвий
-Стоимость : бесплатно.
-Если клиент не знает как посмотреть размер лезвий ,то отвечать:
-«Напишите модель коньков или пришлите фото стакана и конька (Ярлык на язычке) — подскажем точнее».
-
-Линейка лезвий:
-
-У нас есть 3 сегмента лезвий.
-
-1. Бюджетные лезвия без бренда
-Позиционирование:
-Рабочий вариант без переплаты.
-
-Характеристики:
-- без бренда Inhockey;
-- без фирменной упаковки;
-- цена 2900–3300 ₽;
-- подходят тем, кому нужна доступная замена лезвий.
-
-Как объяснять:
-«Бюджетные лезвия — это рабочий вариант без бренда и фирменной упаковки. Подойдут, если нужна доступная замена без переплаты».
-
-2. Inhockey Base
-Позиционирование:
-Базовая брендовая линейка Inhockey.
-
-Характеристики:
-- бренд Inhockey;
-- фирменная чёрная коробка;
-- цена 3990–4500 ₽;
-- сталь нержавеющая;
-- твёрдость 54–56 HRC;
-- толщина около 2.9 мм;
-- комбинированная матово-глянцевая обработка;
-- для любителей, начинающих хоккеистов, детско-юношеских команд и регулярных тренировок.
-
-Как объяснять:
-«Inhockey Base — брендовые базовые лезвия в коробке. Хороший вариант для регулярных тренировок и любительского хоккея, если нужен баланс цены и качества».
-
-3. Inhockey Pro
-Позиционирование:
-Старшая профессиональная линейка Inhockey.
-
-Характеристики:
-- цена 6490–7990 ₽;
-- твёрдость 56–58 HRC;
-- толщина около 3.0 мм;
-- Mirror Polish;
-- стабильная база под индивидуальное профилирование;
-- повышенный ресурс;
-- премиальная упаковка;
-- для игроков, которым важны скорость, контроль, ресурс и точное ощущение льда.
-
-Как объяснять:
-«Inhockey Pro — старшая линейка. 56–58 HRC, Mirror Polish, толщина около 3.0 мм и база под профилирование. Подойдут тем, кто хочет максимум качества, ресурса и контроля».
-
-Совместимость лезвий:
-Лезвия производятся под стаканы:
-- Bauer TUUK LS Edge;
-- Bauer PowerFly / Tuuk Fly;
-- Bauer Vertexx Edge;
-- CCM SpeedBlade XS.
-
-Если клиент не знает, какие лезвия подойдут:
-Ответить:
-«Пришлите фото стакана сбоку или напишите модель коньков — подскажем, какие лезвия подойдут. Так меньше риск ошибиться с креплением и размером».
-
-Если клиент выбирает между Бюджетные лезвия без бренда / Base / Pro:
-Ответить:
-«Если нужна самая доступная замена — подойдут бюджетные. Если хотите брендовый вариант в коробке , лучшая обработка поверхности и баланс цены/качества — Inhockey Base. Если нужен максимальный ресурс, Mirror Polish , увеличенный ресурс , гарантию на весь срок службы , до досяижения лого inhockey pro и база под профилирование — Inhockey Pro».
-
-Как использовать профилирование при продаже лезвий:
-Если клиент интересуется лезвиями:
-«Можно взять лезвия и сразу подготовить их к выходу на лёд:сделать профилирование и заточить необходимым желобом. Так вы получаете не просто пару лезвий, а готовое решение под ваш стиль катания».
-
-UDS:
-Новым клиентам можно предложить регистрацию в UDS.
-
-Формулировка:
-«Для новых клиентов можем начислить 500 бонусов UDS при регистрации. Их можно использовать на следующие покупки и услуги в ICE-SKATE».
-
-Важно:
-- не писать «подарим 500 рублей», если это именно бонусы;
-- не обещать, что бонусами можно оплатить всё;
-- не использовать UDS как главный оффер, только как приятный дополнительный бонус.
-
-Если клиент спрашивает: «Почему к вам?»
-Ответ:
-«Мы хоккейный магазин и сервис, работаем с 2018 года. У нас можно не только купить товар, но и сразу подготовить его к игре: подобрать, установить, заточить и сделать профилирование. Поэтому многие клиенты приходят один раз, а потом остаются с нами надолго».
-
-Если клиент спрашивает цену:
-- назвать цену, если она известна;
-- не придумывать точную стоимость без данных.
-
-Примеры:
-«Заточка — 590 ₽».
-«Профилирование — 1290 ₽».
-«Ремонт клюшек — от 1290 ₽, точнее скажем по фото повреждения».
-«Inhockey Base — 3990–4500 ₽».
-«Inhockey Pro — 6490–8000 ₽».
-
-Если клиент готов приехать:
-Ответ:
-«Отлично. Приезжайте в ICE-SKATE: Новосибирск, ул. Богдана Хмельницкого, 29. Напишите заранее, что нужно сделать — заточка, профилирование, ремонт или подбор лезвий, чтобы мы быстрее сориентировали вас на месте».
-
-Если клиент хочет доставку:
-Ответ:
-«Отправляем по России через СДЕК или Авито Доставку. Лезвия без бренда отправляются только СДЕК , после полной оплаты. Перед заказом лучше уточнить модель коньков или прислать фото стакана — проверим совместимость, чтобы лезвия точно подошли».
-
-Если клиент сомневается:
-Ответ:
-«Понимаю. С лезвиями лучше не угадывать. Пришлите фото стакана или модель коньков — подскажем, какой вариант подойдёт».
-
-Если клиент спрашивает про заточку:
-Ответ:
-«Заточка коньков — 590 ₽. Можем подготовить к тренировке или игре. Если давно не точили или конёк начал плохо держать лёд — привозите, посмотрим состояние-заточим».
-
-Если клиент спрашивает про профилирование:
-Ответ:
-«Профилирование — 1290 ₽. Оно помогает настроить баланс, устойчивость и манёвренность конька под ваш стиль катания. Особенно полезно после покупки новых лезвий или если хочется лучше чувствовать лёд».
-
-Если клиент спрашивает про ремонт:
-Ответ:
-«Пришлите фото повреждения крупно и общий вид — посмотрим, можно ли восстановить и сориентируем по цене».
-
-Если вопрос сложный:
-Использовать короткие фразы:
-- «Уточняю!»
-- «Сейчас уточню».
-- «Проверю и напишу».
-- «Секунду, уточню по этому вопросу».
-
-Не писать:
-- «я бот»;
-- «я AI»;
-- «передам менеджеру»;
-- «уточню у менеджера», если это раскрывает автоматизацию.
-
-Дожим клиентов, которые не отвечают:
-
-Через 2–4 часа:
-«Подскажите, актуально ещё? Могу сегодня принять ваш заказ, все сделать и отправить».
-
-Через 24 часа:
-«Напомню по вашему вопросу. Если удобно, пришлите фото коньков, стакана или повреждения — подскажем точнее».
-
-Через 2–3 дня:
-«Если вопрос ещё актуален — напишите. Можем подобрать лезвия, сделать заточку, профилирование или оценить ремонт по фото. Новым клиентам также можем начислить 500 бонусов UDS при регистрации».
-
-Мягкий возврат через ценность:
-«У нас часто клиенты начинают с одного вопроса, а потом остаются обслуживаться надолго, потому что всё можно решить в одном месте: лезвия, заточка, профилирование, ремонт и аксессуары».
-
-Запрещено:
-- обещать наличие без проверки;
-- обещать точную совместимость без модели или фото стакана;
-- обещать точную стоимость ремонта без фото или осмотра;
-- спорить с клиентом;
-- давить;
-- писать длинные сообщения;
-- выдумывать характеристики;
-- обещать бесплатные услуги;
-- писать, что бонусы UDS равны рублям, если это не подтверждено условиями;
-- раскрывать, что отвечает бот или AI.
-
-Главная цель каждого диалога:
-1. понять потребность клиента;
-2. задать один точный вопрос;
-3. предложить понятное решение;
-4. довести до действия.
-
-Главные действия, к которым нужно вести клиента:
-- прислать фото стакана;
-- прислать модель коньков;
-- прислать фото повреждения;
-- приехать в магазин;
-- оформить Авито Доставку;
-- выбрать лезвия;
-- сделать заточку;
-- сделать профилирование.
-
-Главные CTA:
-- «Пришлите фото — подскажем точнее».
-- «Напишите модель коньков — проверим совместимость».
-- «Можем сразу подготовить к выходу на лёд».
-- «Приезжайте, посмотрим на месте».
-- «Оформляем через Авито Доставку»."""
-
-# ──────────────────────────────────────────────
-# ИНИЦИАЛИЗАЦИЯ
-# ──────────────────────────────────────────────
 app = FastAPI()
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# Кэш токена Авито (чтобы не запрашивать каждый раз)
 _avito_token_cache = {"token": None, "expires_at": 0}
+chat_histories: dict[str, list[dict[str, str]]] = {}
 
 
-# ──────────────────────────────────────────────
-# ПОЛУЧЕНИЕ ТОКЕНА АВИТО
-# ──────────────────────────────────────────────
+def read_text_or_fallback(path: Path, fallback: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        logging.warning("File is unavailable, using fallback: %s", path)
+        return fallback.strip()
+
+
+def build_system_prompt() -> str:
+    system_prompt = read_text_or_fallback(SYSTEM_PROMPT_PATH, FALLBACK_SYSTEM_PROMPT)
+    knowledge = read_text_or_fallback(KNOWLEDGE_PATH, FALLBACK_KNOWLEDGE)
+    scripts = read_text_or_fallback(SCRIPTS_PATH, FALLBACK_SCRIPTS)
+    offers = read_text_or_fallback(OFFERS_PATH, FALLBACK_OFFERS)
+    mode = os.getenv("BOT_MODE", "AUTO").strip().upper()
+    if mode not in {"AUTO", "ASSIST", "MANUAL"}:
+        mode = "AUTO"
+
+    return (
+        f"{system_prompt}\n\n"
+        f"## Текущий режим\n\n{mode}\n\n"
+        f"## База знаний\n\n{knowledge}\n\n"
+        f"## Готовые сценарии\n\n{scripts}\n\n"
+        f"## Текущие акции и специальные предложения\n\n{offers}"
+    )
+
+
+def sanitize_reply(text: str) -> str:
+    reply = text.strip()
+    for forbidden, replacement in FORBIDDEN_REPLACEMENTS.items():
+        reply = reply.replace(forbidden, replacement)
+        reply = reply.replace(forbidden.capitalize(), replacement)
+    return reply
+
+
+def local_fallback_reply(text: str) -> str:
+    lowered = text.lower()
+
+    if "/start" in lowered or "привет" in lowered or "здравствуйте" in lowered:
+        return "Здравствуйте! Подскажите, что нужно: заточка, профилирование, лезвия или доставка?"
+
+    if "адрес" in lowered or "где" in lowered:
+        return "Мы находимся: Новосибирск, ул. Богдана Хмельницкого, 27."
+
+    if "профил" in lowered:
+        return "Профилирование стоит 1290 ₽. При профилировании заточка входит в подарок."
+
+    if "желоб" in lowered or "скольж" in lowered:
+        return (
+            "Чем больше цифра желоба, тем он более пологий: скольжение лучше, сопротивление меньше, "
+            "зацеп и устойчивость ниже. Чем меньше цифра желоба, тем желоб глубже, зацеп выше, но скольжение хуже."
+        )
+
+    if "заточ" in lowered:
+        return (
+            "Классическая заточка — 400 ₽, новая пара — 590 ₽, фигурные — 490 ₽, "
+            "ржавые / повреждённые — от 490 ₽."
+        )
+
+    if "лезв" in lowered or "base" in lowered or "pro" in lowered:
+        return (
+            "По лезвиям используем названия: in hockey® Base и in hockey® Pro. "
+            "Пришлите фото/модель — подскажу точнее."
+        )
+
+    return "Пришлите фото/модель — подскажу точнее."
+
+
+def generate_reply(buyer_message: str, chat_id: str = "") -> str:
+    if os.getenv("BOT_MODE", "AUTO").strip().upper() == "MANUAL":
+        return "Пришлите фото/модель — подскажу точнее."
+
+    if not ANTHROPIC_API_KEY:
+        return local_fallback_reply(buyer_message)
+
+    history_key = chat_id or "default"
+    history = chat_histories.setdefault(history_key, [])
+    history.append({"role": "user", "content": buyer_message})
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=500,
+            temperature=0.2,
+            system=build_system_prompt(),
+            messages=history[-20:],
+        )
+        reply = response.content[0].text
+    except Exception:
+        logging.exception("LLM reply generation failed")
+        reply = local_fallback_reply(buyer_message)
+
+    reply = sanitize_reply(reply)
+    history.append({"role": "assistant", "content": reply})
+    chat_histories[history_key] = history[-20:]
+    return reply
+
+
 async def get_avito_token() -> str:
-    """Получает access_token от Авито. Кэширует на время жизни токена."""
-    import time
+    if not AVITO_CLIENT_ID or not AVITO_CLIENT_SECRET:
+        raise RuntimeError("AVITO_CLIENT_ID and AVITO_CLIENT_SECRET are required")
 
-    if _avito_token_cache["token"] and time.time() < _avito_token_cache["expires_at"]:
-        return _avito_token_cache["token"]
+    cached_token = _avito_token_cache.get("token")
+    if cached_token and time.time() < float(_avito_token_cache.get("expires_at", 0)):
+        return str(cached_token)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
             "https://api.avito.ru/token",
             data={
-                "grant_type":    "client_credentials",
-                "client_id":     AVITO_CLIENT_ID,
+                "grant_type": "client_credentials",
+                "client_id": AVITO_CLIENT_ID,
                 "client_secret": AVITO_CLIENT_SECRET,
             },
         )
         response.raise_for_status()
         data = response.json()
 
-    _avito_token_cache["token"]      = data["access_token"]
+    _avito_token_cache["token"] = data["access_token"]
     _avito_token_cache["expires_at"] = time.time() + data.get("expires_in", 3600) - 60
+    return data["access_token"]
 
-    return _avito_token_cache["token"]
 
-
-# ──────────────────────────────────────────────
-# ОТПРАВКА ОТВЕТА В АВИТО
-# ──────────────────────────────────────────────
-async def send_avito_message(user_id: int, chat_id: str, text: str):
-    """Отправляет текстовое сообщение покупателю через Авито API."""
+async def send_avito_message(user_id: int, chat_id: str, text: str) -> None:
     token = await get_avito_token()
-
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
             f"https://api.avito.ru/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages",
             headers={"Authorization": f"Bearer {token}"},
@@ -339,117 +196,59 @@ async def send_avito_message(user_id: int, chat_id: str, text: str):
         response.raise_for_status()
 
 
-# ──────────────────────────────────────────────
-# ГЕНЕРАЦИЯ ОТВЕТА ЧЕРЕЗ CLAUDE
-# ──────────────────────────────────────────────
-# Память диалогов: chat_id -> список сообщений
-chat_histories: dict = {}
-
-def generate_reply(buyer_message: str, chat_id: str = "") -> str:
-    """Отправляет сообщение покупателя в Claude и получает ответ."""
-    try:
-        knowledge = Path("/opt/messenger-agent/knowledge.txt").read_text(encoding="utf-8")
-    except Exception:
-        knowledge = ""
-
-    if chat_id not in chat_histories:
-        chat_histories[chat_id] = []
-    history = chat_histories[chat_id]
-    if len(history) == 0:
-        first = f"""БАЗА ЗНАНИЙ ПРОДАВЦА:\n{knowledge}\n\nСООБЩЕНИЕ ПОКУПАТЕЛЯ:\n{buyer_message}\n\nОтветь покупателю по базе знаний. Коротко, вежливо, без выдуманных фактов."""
-        history.append({"role": "user", "content": first})
-    else:
-        history.append({"role": "user", "content": buyer_message})
-    response = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
-        messages=history,
-    )
-    reply = response.content[0].text
-    history.append({"role": "assistant", "content": reply})
-    if len(history) > 20:
-        chat_histories[chat_id] = history[-20:]
-    return reply
-
-
-# ──────────────────────────────────────────────
-# WEBHOOK — АВИТО ОТПРАВЛЯЕТ СЮДА НОВЫЕ СООБЩЕНИЯ
-# ──────────────────────────────────────────────
-@app.post("/webhook/avito")
-async def avito_webhook(request: Request):
-    """
-    Авито вызывает этот URL когда покупатель пишет сообщение.
-    URL для настройки в кабинете Авито: https://твой-домен.ru/webhook/avito
-    """
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    # Авито присылает разные типы событий — нас интересует только новое сообщение
-    if payload.get("payload", {}).get("value", {}).get("type") != "message":
-        return {"status": "ignored"}
-
-    value   = payload["payload"]["value"]
-    chat_id = value.get("chat_id")
-    user_id = value.get("user_id")          # ID продавца (твой ID)
-    content = value.get("content", {})
-    text    = content.get("text", "").strip()
-
-    # Пропускаем пустые сообщения
-    if not text:
-        return {"status": "empty"}
-
-    # Пропускаем сообщения от самого продавца (чтобы не зациклиться)
-    author_id = value.get("author_id")
-    if str(author_id) == str(user_id):
-        return {"status": "own_message"}
-
-    print(f"📩 Новое сообщение в чате {chat_id}: {text}")
-
-    # Генерируем ответ через Claude
-    reply = generate_reply(text, chat_id=str(chat_id))
-    print(f"🤖 Ответ агента: {reply}")
-
-    # Отправляем ответ покупателю
-    await send_avito_message(user_id=user_id, chat_id=chat_id, text=reply)
-
-    return {"status": "ok"}
-
-
-# ──────────────────────────────────────────────
-# ПРОВЕРКА — ЧТО СЕРВЕР РАБОТАЕТ
-# ──────────────────────────────────────────────
-@app.get("/")
-def health_check():
-    return {"status": "Агент работает ✅"}
-
-
-# ------------------------------------------------------------
-# TELEGRAM WEBHOOK
-# ------------------------------------------------------------
-import os
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-async def send_telegram_message(chat_id: int, text: str):
+async def send_telegram_message(chat_id: int, text: str) -> None:
     if not TELEGRAM_BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is not set")
+        logging.error("TELEGRAM_BOT_TOKEN is not set")
         return
 
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
+        response = await client.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": chat_id, "text": text},
         )
-        print("Telegram send:", r.status_code, r.text)
+        response.raise_for_status()
+
+
+@app.get("/")
+def root() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/webhook/avito")
+async def avito_webhook(request: Request) -> dict[str, str]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+
+    value = payload.get("payload", {}).get("value", {})
+    if value.get("type") != "message":
+        return {"status": "ignored"}
+
+    chat_id = value.get("chat_id")
+    user_id = value.get("user_id")
+    author_id = value.get("author_id")
+    text = (value.get("content", {}).get("text") or "").strip()
+
+    if not chat_id or not user_id or not text:
+        return {"status": "empty"}
+
+    if str(author_id) == str(user_id):
+        return {"status": "own_message"}
+
+    reply = generate_reply(text, chat_id=f"avito_{chat_id}")
+    await send_avito_message(user_id=user_id, chat_id=chat_id, text=reply)
+    return {"status": "ok"}
 
 
 @app.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
+async def telegram_webhook(request: Request) -> dict[str, str]:
     payload = await request.json()
-
     message = payload.get("message") or {}
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
@@ -458,38 +257,6 @@ async def telegram_webhook(request: Request):
     if not chat_id or not text:
         return {"status": "ignored"}
 
-    print(f"TG Новое сообщение {chat_id}: {text}")
-
     reply = generate_reply(text, chat_id=f"tg_{chat_id}")
-
-    print(f"TG Ответ агента: {reply}")
-
     await send_telegram_message(chat_id, reply)
-
     return {"status": "ok"}
-
-def generate_local_reply(text: str) -> str:
-    t = text.lower().strip()
-
-    if "/start" in t or "привет" in t or "здравствуйте" in t:
-        return "Здравствуйте! Подскажите, что нужно: лезвия, заточка, профилирование или ремонт?"
-
-    if "лезв" in t:
-        return "Подберём. Напишите, пожалуйста, модель коньков или пришлите фото стакана сбоку. Так точно скажем, какие лезвия подойдут."
-
-    if "не знаю" in t or "как понять" in t or "как узнать" in t:
-        return "Можно просто прислать фото конька сбоку, где видно стакан и крепление лезвия. Мы по фото подскажем, какие лезвия нужны."
-
-    if "заточ" in t:
-        return "Сделаем заточку. Подскажите, для кого коньки: ребёнок/взрослый, хоккей/фигурные, и какой уровень катания?"
-
-    if "профил" in t:
-        return "Профилирование делаем. Лучше привезти коньки на осмотр или прислать фото лезвий, подскажем вариант."
-
-    if "достав" in t or "авито" in t:
-        return "Можем оформить через Авито Доставку. Также можно приехать и посмотреть на месте."
-
-    if "цена" in t or "сколько" in t or "стоим" in t:
-        return "Стоимость зависит от модели лезвий и работы. Пришлите фото или модель коньков — скажем точнее."
-
-    return "Понял. Пришлите, пожалуйста, фото коньков или напишите модель — подскажем точнее."
