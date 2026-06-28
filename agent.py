@@ -275,7 +275,7 @@ def known_holder_and_size(full_context: str) -> tuple[str, str] | None:
     vertexx_size = extract_vertexx_size(full_context)
     if has_vertexx(full_context) and vertexx_size:
         return "Bauer Vertexx", vertexx_size
-    if has_xs(full_context) and size and has_blade_request(full_context):
+    if has_xs(full_context) and size:
         return "CCM XS", size
     return None
 
