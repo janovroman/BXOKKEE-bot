@@ -196,6 +196,12 @@ def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None)
             return f"Самый доступный вариант для Bauer Tuuk Edge {size} — бюджетные лезвия без бренда. Базовая цена — 3490 ₽."
         return "Самый доступный вариант — бюджетные лезвия без бренда. Для точной проверки подскажите стакан и размер лезвия."
 
+    if current_has_edge and current_size:
+        return (
+            f"Понял, Bauer Tuuk Edge {current_size}. Есть три варианта: бюджетные лезвия без бренда, "
+            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
+        )
+
     if has_bauer and full_has_edge and current_size:
         return (
             f"Понял, Bauer Tuuk Edge {current_size}. Есть три варианта: бюджетные лезвия без бренда, "
