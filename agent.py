@@ -151,6 +151,19 @@ def has_edge(text: str) -> bool:
     )
 
 
+def has_fly(text: str) -> bool:
+    return any(token in text for token in ("powerfly", "power fly", "fly", "пауэрфлай", "флай"))
+
+
+def has_ccm_xs(text: str) -> bool:
+    has_ccm = "ccm" in text or "ццм" in text
+    return "xs" in text and has_ccm
+
+
+def has_xs(text: str) -> bool:
+    return "xs" in text
+
+
 def has_vertexx(text: str) -> bool:
     return "vertexx" in text or "вертекс" in text
 
@@ -199,36 +212,40 @@ def has_budget_request(text: str) -> bool:
     )
 
 
-def blade_options_reply(size: str) -> str:
+def has_base_request(text: str) -> bool:
+    return "base" in text or "бейс" in text
+
+
+def has_pro_request(text: str) -> bool:
+    return re.search(r"\bpro\b", text) is not None or "про" in text
+
+
+def blade_options_reply(holder: str, size: str) -> str:
     return (
-        f"Понял, нужны лезвия Bauer Tuuk Edge {size}.\n\n"
-        "Есть три варианта:\n"
-        "1. Бюджетные лезвия без бренда — базовая цена 3490 ₽.\n"
-        "2. in hockey® Base — базовая цена 4990 ₽.\n"
-        "3. in hockey® Pro — базовая цена 5990 ₽.\n\n"
-        "Можем сразу подготовить лезвия к выходу на лёд: сделать профилирование и заточку нужным желобом. "
-        "При профилировании заточка входит в подарок.\n\n"
-        "Какой вариант рассматриваете?"
+        f"Понял, нужны лезвия {holder} {size}.\n\n"
+        "Есть 3 варианта: бюджетные лезвия без бренда, in hockey® Base и in hockey® Pro. "
+        "Какой вариант рассматриваете — самый доступный или лучше по ресурсу?"
     )
 
 
-def budget_blade_reply(size: str) -> str:
+def budget_blade_reply(holder: str, size: str) -> str:
     return (
-        f"Самый доступный вариант для Bauer Tuuk Edge {size} — бюджетные лезвия без бренда. "
-        "Базовая цена 3490 ₽.\n\n"
-        "Если хотите, можем сразу подготовить их к выходу на лёд: сделать профилирование и заточку нужным желобом. "
-        "При профилировании заточка входит в подарок."
+        f"Бюджетные лезвия без бренда для {holder} {size} — базовая цена 3490 ₽.\n\n"
+        "Можем зарегистрировать вас в UDS — получите 500 приветственных бонусов и сможете копить бонусы на следующие покупки и услуги."
     )
 
 
-def vertexx_options_reply(size: str) -> str:
+def base_blade_reply(holder: str, size: str) -> str:
     return (
-        f"Понял, нужны лезвия Bauer Vertexx {size}.\n\n"
-        "Есть три варианта:\n"
-        "1. Бюджетные лезвия без бренда.\n"
-        "2. in hockey® Base.\n"
-        "3. in hockey® Pro.\n\n"
-        f"Проверим подходящий вариант под Vertexx {size}."
+        f"in hockey® Base для {holder} {size} — базовая цена 4990 ₽.\n\n"
+        "Можем зарегистрировать вас в UDS — получите 500 приветственных бонусов и сможете копить бонусы на следующие покупки и услуги."
+    )
+
+
+def pro_blade_reply(holder: str, size: str) -> str:
+    return (
+        f"in hockey® Pro для {holder} {size} — базовая цена 5990 ₽.\n\n"
+        "Можем зарегистрировать вас в UDS — получите 500 приветственных бонусов и сможете копить бонусы на следующие покупки и услуги."
     )
 
 
@@ -247,28 +264,36 @@ def goalie_bauer_size_reply() -> str:
     )
 
 
+def known_holder_and_size(full_context: str) -> tuple[str, str] | None:
+    size = extract_blade_size(full_context)
+    if has_ccm_xs(full_context) and size:
+        return "CCM XS", size
+    if has_edge(full_context) and size and ("bauer" in full_context or "бауер" in full_context or has_blade_request(full_context)):
+        return "Bauer Tuuk Edge", size
+    if has_fly(full_context) and size and ("bauer" in full_context or "бауер" in full_context or has_blade_request(full_context)):
+        return "Bauer Fly/PowerFly", size
+    vertexx_size = extract_vertexx_size(full_context)
+    if has_vertexx(full_context) and vertexx_size:
+        return "Bauer Vertexx", vertexx_size
+    if has_xs(full_context) and size and has_blade_request(full_context):
+        return "CCM XS", size
+    return None
+
+
 def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None) -> str:
     lowered = normalize_text(text)
     context = user_history_text(history)
     full_context = f"{context}\n{lowered}".strip()
-    size = extract_blade_size(full_context)
-    current_size = extract_blade_size(lowered)
+    holder_size = known_holder_and_size(full_context)
+    current_holder_size = known_holder_and_size(lowered)
     has_bauer = "bauer" in full_context or "бауер" in full_context
     current_has_bauer = "bauer" in lowered or "бауер" in lowered
     full_has_edge = has_edge(full_context)
     current_has_edge = has_edge(lowered)
-    full_has_vertexx = has_vertexx(full_context)
     current_has_vertexx = has_vertexx(lowered)
     current_goalie_bauer = has_goalie_bauer(lowered)
-    vertexx_size = extract_vertexx_size(full_context)
     current_vertexx_size = extract_vertexx_size(lowered)
-    blade_context = has_blade_request(full_context) or has_bauer or full_has_edge or full_has_vertexx
-
-    if (current_has_vertexx or full_has_vertexx) and current_vertexx_size:
-        return vertexx_options_reply(current_vertexx_size)
-
-    if current_has_vertexx and vertexx_size:
-        return vertexx_options_reply(vertexx_size)
+    blade_context = has_blade_request(full_context) or has_bauer or full_has_edge or has_vertexx(full_context) or has_ccm_xs(full_context)
 
     if current_goalie_bauer and "размер" in lowered and current_vertexx_size and not current_has_vertexx:
         return goalie_bauer_size_reply()
@@ -277,30 +302,35 @@ def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None)
         return goalie_bauer_reply()
 
     if has_budget_request(lowered):
-        if full_has_edge and size:
-            return budget_blade_reply(size)
+        if holder_size:
+            holder, size = holder_size
+            return budget_blade_reply(holder, size)
         return "Самый доступный вариант — бюджетные лезвия без бренда. Для точной проверки подскажите стакан и размер лезвия."
 
-    if full_has_edge and current_size:
-        return blade_options_reply(current_size)
+    if has_base_request(lowered) and holder_size:
+        holder, size = holder_size
+        return base_blade_reply(holder, size)
 
-    if current_has_bauer and current_has_edge and size:
-        return blade_options_reply(size)
+    if has_pro_request(lowered) and holder_size:
+        holder, size = holder_size
+        return pro_blade_reply(holder, size)
 
-    if current_has_edge and current_size:
-        return blade_options_reply(current_size)
+    if current_holder_size:
+        holder, size = current_holder_size
+        return blade_options_reply(holder, size)
 
-    if blade_context and full_has_edge and size:
-        return blade_options_reply(size)
+    if holder_size and (has_blade_request(lowered) or current_has_edge or current_has_vertexx or has_xs(lowered) or extract_blade_size(lowered)):
+        holder, size = holder_size
+        return blade_options_reply(holder, size)
 
-    if blade_context and (has_bauer or current_has_edge) and current_has_edge and not size:
+    if blade_context and (has_bauer or current_has_edge) and current_has_edge and not extract_blade_size(full_context):
         return "Понял, Bauer Tuuk Edge. Какой размер лезвия нужен? Например 263, 272, 280."
 
-    if blade_context and current_has_bauer and not full_has_edge:
+    if blade_context and current_has_bauer and not (full_has_edge or has_fly(full_context) or has_vertexx(full_context)):
         return "По Bauer уточните стакан: Tuuk Edge, Fly/PowerFly или Vertexx?"
 
-    if "base" in lowered or "pro" in lowered or "бюджет" in lowered:
-        return "Понял. Подскажите стакан и размер лезвия — так точно проверим подходящий вариант."
+    if has_xs(lowered) and not extract_blade_size(full_context):
+        return "Понял, CCM XS. Какой размер лезвия нужен? Например 263, 271, 280."
 
     if has_blade_request(lowered):
         return (
