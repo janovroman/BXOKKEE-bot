@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -118,8 +119,109 @@ def avoid_repeated_clarification(reply: str, history: list[dict[str, str]]) -> s
     return CLARIFICATION_ALTERNATIVES[0]
 
 
-def local_fallback_reply(text: str) -> str:
-    lowered = text.lower()
+def normalize_text(text: str) -> str:
+    return text.lower().replace("ё", "е")
+
+
+def user_history_text(history: list[dict[str, str]] | None) -> str:
+    if not history:
+        return ""
+    user_messages = [
+        item.get("content", "")
+        for item in history[-MAX_HISTORY_MESSAGES:]
+        if item.get("role") == "user"
+    ]
+    return normalize_text("\n".join(user_messages))
+
+
+def has_edge(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "edge",
+            "tuuk edge",
+            "тук эдж",
+            "туук эдж",
+            "тук едж",
+            "туук едж",
+            "едже",
+            "едж",
+            "эдж",
+        )
+    )
+
+
+def extract_blade_size(text: str) -> str | None:
+    for match in re.findall(r"\b\d{3}\b", text):
+        size = int(match)
+        if 200 <= size <= 330:
+            return match
+    return None
+
+
+def has_blade_request(text: str) -> bool:
+    return "лезв" in text
+
+
+def has_budget_request(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "подешевле",
+            "дешевле",
+            "бюджет",
+            "самые недорогие",
+            "самый недорогой",
+            "самый доступный",
+            "более дешевые",
+            "более дешевый",
+        )
+    )
+
+
+def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None) -> str:
+    lowered = normalize_text(text)
+    context = user_history_text(history)
+    full_context = f"{context}\n{lowered}".strip()
+    size = extract_blade_size(full_context)
+    current_size = extract_blade_size(lowered)
+    has_bauer = "bauer" in full_context or "бауер" in full_context
+    current_has_bauer = "bauer" in lowered or "бауер" in lowered
+    full_has_edge = has_edge(full_context)
+    current_has_edge = has_edge(lowered)
+    blade_context = has_blade_request(full_context) or has_bauer or full_has_edge
+
+    if has_budget_request(lowered):
+        if has_bauer and full_has_edge and size:
+            return f"Самый доступный вариант для Bauer Tuuk Edge {size} — бюджетные лезвия без бренда. Базовая цена — 3490 ₽."
+        return "Самый доступный вариант — бюджетные лезвия без бренда. Для точной проверки подскажите стакан и размер лезвия."
+
+    if has_bauer and full_has_edge and current_size:
+        return (
+            f"Понял, Bauer Tuuk Edge {current_size}. Есть три варианта: бюджетные лезвия без бренда, "
+            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
+        )
+
+    if current_has_bauer and current_has_edge and size:
+        return (
+            f"Понял, Bauer Tuuk Edge {size}. Есть три варианта: бюджетные лезвия без бренда, "
+            "in hockey® Base и in hockey® Pro. Какой вариант рассматриваете?"
+        )
+
+    if blade_context and has_bauer and current_has_edge and not size:
+        return "Понял, Bauer Tuuk Edge. Какой размер лезвия нужен? Например 263, 272, 280."
+
+    if blade_context and current_has_bauer and not full_has_edge:
+        return "По Bauer уточните стакан: Tuuk Edge, Fly/PowerFly или Vertexx?"
+
+    if "base" in lowered or "pro" in lowered or "бюджет" in lowered:
+        return "Понял. Подскажите стакан и размер лезвия — так точно проверим подходящий вариант."
+
+    if has_blade_request(lowered):
+        return (
+            "Подскажите, под какой стакан нужны лезвия: Bauer Tuuk Edge, Fly/PowerFly, "
+            "Vertexx или CCM XS? И какой размер указан на старом лезвии — например 263, 272, 280?"
+        )
 
     if "/start" in lowered or "привет" in lowered or "здравствуйте" in lowered:
         return "Здравствуйте! Подскажите, что нужно: заточка, профилирование, лезвия или доставка?"
@@ -142,14 +244,6 @@ def local_fallback_reply(text: str) -> str:
             "ржавые / повреждённые — от 490 ₽."
         )
 
-    if "лезв" in lowered or "base" in lowered or "pro" in lowered or "бюджет" in lowered:
-        if "base" in lowered or "pro" in lowered or "бюджет" in lowered:
-            return "Понял. Подскажите стакан и размер лезвия — так точно проверим подходящий вариант."
-        return (
-            "Подскажите, под какой стакан нужны лезвия: Bauer Tuuk Edge, Fly/PowerFly, "
-            "Vertexx или CCM XS? И какой размер указан на старом лезвии — например 263, 272, 280?"
-        )
-
     return "Пришлите фото/модель — подскажу точнее."
 
 
@@ -165,7 +259,8 @@ def generate_reply(buyer_message: str, chat_id: str = "") -> str:
         return reply
 
     if not ANTHROPIC_API_KEY:
-        reply = sanitize_reply(local_fallback_reply(buyer_message))
+        recent_history = [*history, {"role": "user", "content": buyer_message}][-MAX_HISTORY_MESSAGES:]
+        reply = sanitize_reply(local_fallback_reply(buyer_message, recent_history))
         reply = avoid_repeated_clarification(reply, history)
         history.append({"role": "user", "content": buyer_message})
         history.append({"role": "assistant", "content": reply})
@@ -187,7 +282,7 @@ def generate_reply(buyer_message: str, chat_id: str = "") -> str:
         reply = response.content[0].text
     except Exception:
         logging.exception("LLM reply generation failed")
-        reply = local_fallback_reply(buyer_message)
+        reply = local_fallback_reply(buyer_message, recent_history)
 
     reply = sanitize_reply(reply)
     reply = avoid_repeated_clarification(reply, history)
