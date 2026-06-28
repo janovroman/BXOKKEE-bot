@@ -142,10 +142,12 @@ def local_fallback_reply(text: str) -> str:
             "ржавые / повреждённые — от 490 ₽."
         )
 
-    if "лезв" in lowered or "base" in lowered or "pro" in lowered:
+    if "лезв" in lowered or "base" in lowered or "pro" in lowered or "бюджет" in lowered:
+        if "base" in lowered or "pro" in lowered or "бюджет" in lowered:
+            return "Понял. Подскажите стакан и размер лезвия — так точно проверим подходящий вариант."
         return (
-            "По лезвиям используем названия: in hockey® Base и in hockey® Pro. "
-            "Пришлите фото/модель — подскажу точнее."
+            "Подскажите, под какой стакан нужны лезвия: Bauer Tuuk Edge, Fly/PowerFly, "
+            "Vertexx или CCM XS? И какой размер указан на старом лезвии — например 263, 272, 280?"
         )
 
     return "Пришлите фото/модель — подскажу точнее."
