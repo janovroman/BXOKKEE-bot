@@ -151,6 +151,26 @@ def has_edge(text: str) -> bool:
     )
 
 
+def has_vertexx(text: str) -> bool:
+    return "vertexx" in text or "вертекс" in text
+
+
+def has_goalie_bauer(text: str) -> bool:
+    return (
+        ("вратар" in text and ("bauer" in text or "бауер" in text))
+        or "bauer goalie" in text
+        or "goalie bauer" in text
+        or "бауер goalie" in text
+        or "goalie бауер" in text
+    )
+
+
+def extract_vertexx_size(text: str) -> str | None:
+    for match in re.findall(r"\b(?:размер\s*)?([1-9]|1[0-2])\b", text):
+        return match
+    return None
+
+
 def extract_blade_size(text: str) -> str | None:
     for match in re.findall(r"\b\d{3}\b", text):
         size = int(match)
@@ -201,6 +221,32 @@ def budget_blade_reply(size: str) -> str:
     )
 
 
+def vertexx_options_reply(size: str) -> str:
+    return (
+        f"Понял, нужны лезвия Bauer Vertexx {size}.\n\n"
+        "Есть три варианта:\n"
+        "1. Бюджетные лезвия без бренда.\n"
+        "2. in hockey® Base.\n"
+        "3. in hockey® Pro.\n\n"
+        f"Проверим подходящий вариант под Vertexx {size}."
+    )
+
+
+def goalie_bauer_reply() -> str:
+    return (
+        "Скорее всего, у вас стакан Bauer Vertexx. Подскажите размер, который указан "
+        "на старом лезвии, или пришлите фото маркировки — подберём точнее."
+    )
+
+
+def goalie_bauer_size_reply() -> str:
+    return (
+        "Понял, речь про вратарские Bauer. Скорее всего, это стакан Bauer Vertexx. "
+        "Уточните, пожалуйста, размер именно на старом лезвии или пришлите фото "
+        "маркировки — так не ошибёмся."
+    )
+
+
 def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None) -> str:
     lowered = normalize_text(text)
     context = user_history_text(history)
@@ -211,7 +257,24 @@ def local_fallback_reply(text: str, history: list[dict[str, str]] | None = None)
     current_has_bauer = "bauer" in lowered or "бауер" in lowered
     full_has_edge = has_edge(full_context)
     current_has_edge = has_edge(lowered)
-    blade_context = has_blade_request(full_context) or has_bauer or full_has_edge
+    full_has_vertexx = has_vertexx(full_context)
+    current_has_vertexx = has_vertexx(lowered)
+    current_goalie_bauer = has_goalie_bauer(lowered)
+    vertexx_size = extract_vertexx_size(full_context)
+    current_vertexx_size = extract_vertexx_size(lowered)
+    blade_context = has_blade_request(full_context) or has_bauer or full_has_edge or full_has_vertexx
+
+    if (current_has_vertexx or full_has_vertexx) and current_vertexx_size:
+        return vertexx_options_reply(current_vertexx_size)
+
+    if current_has_vertexx and vertexx_size:
+        return vertexx_options_reply(vertexx_size)
+
+    if current_goalie_bauer and "размер" in lowered and current_vertexx_size and not current_has_vertexx:
+        return goalie_bauer_size_reply()
+
+    if current_goalie_bauer and not current_has_vertexx:
+        return goalie_bauer_reply()
 
     if has_budget_request(lowered):
         if full_has_edge and size:
